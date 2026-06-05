@@ -24,32 +24,37 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
         extracted_dns = []
         if target_urls:
             airport_url = target_urls[0]
+
+            # 自动安全拼接 &flag=clash 确保机场向小跟班返回包含加密 DNS 的完整配置
+            if "flag=" not in airport_url:
+                if "?" in airport_url:
+                    airport_url += "&flag=clash"
+                else:
+                    airport_url += "?flag=clash"
+
             try:
-                # 3. 小跟班代替路由先访问一次机场，把里面最新变动的加密 DNS 抓出来
-                # 【核心伪装】直接在构造函数中锁定 headers，阻断 Python 悄悄塞入自动化 bot 标识
                 req = urllib.request.Request(
                     airport_url,
                     headers={
                         'User-Agent': 'Mihomo',
-                        'User-agent': 'Mihomo' # 双重大小写锁定，彻底洗掉 Python 默认标识
+                        'User-agent': 'Mihomo'
                     }
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     raw_text = resp.read().decode('utf-8', errors='ignore')
+                    # 精准匹配包含端口号的动态加密 DoH 链接
                     found_urls = re.findall(r"https://[^\s'\",\]]+/dns-query/[A-Za-z0-9-]+", raw_text)
                     if found_urls:
                         extracted_dns = list(set(found_urls))
             except Exception as e:
                 print(f"[小跟班提示] 提前提取机场动态 DNS 失败: {e}")
 
-        # 4. 构造请求准备转发给内部真正的 subconverter 工作核心（本地 25500 端口）
+        # 3. 构造完整请求，无损转发给内部真正的 subconverter 工作核心（本地 25500 端口）
         backend_url = f"http://127.0.0.1:{REAL_BACKEND_PORT}{parsed_url.path}"
         if parsed_url.query:
             backend_url += f"?{parsed_url.query}"
 
         try:
-            # 【核心伪装】转发给本地核心时同样直接在字典里锁死 Mihomo 身份
-            # 这样 subconverter 内部发起 C++ curl 请求时会 100% 携带清纯的 Mihomo 标识，绕过机场拦截墙
             backend_req = urllib.request.Request(
                 backend_url,
                 headers={
@@ -58,25 +63,36 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
 
-            # 拿到原版 subconverter 翻译好的标准 Clash 配置文件文本
             with urllib.request.urlopen(backend_req, timeout=15) as resp:
                 clash_config = resp.read().decode('utf-8', errors='ignore')
 
-            # 5. 【核心缝合】如果成功抓到了最新的加密电话本，强行把它塞进配置中
-            if extracted_dns:
-                if "dns:" in clash_config:
-                    proxy_ns_block = "  proxy-server-nameserver:\n"
-                    for dns_url in extracted_dns:
-                        proxy_ns_block += f"    - '{dns_url}'\n"
-                    clash_config = clash_config.replace("dns:\n", f"dns:\n{proxy_ns_block}")
+            # =====================================================================
+            # 【新增高阶核心功能】自动无损缝合被 Subconverter 意外截断换行的长行代理节点
+            # =====================================================================
+            raw_lines = clash_config.split('\n')
+            fixed_lines = []
+            for line in raw_lines:
+                # 如果上一行是以逗号或左大括号结尾，且当前行不是独立节点（不以 - 开头），说明是被迫强行截断的“风筝线”，直接首尾拼接
+                if fixed_lines and line.strip() and not line.strip().startswith('-') and not line.strip().startswith('proxy-groups:') and not line.strip().startswith('rules:') and (fixed_lines[-1].strip().endswith(',') or fixed_lines[-1].strip().endswith('{')):
+                    fixed_lines[-1] = fixed_lines[-1].rstrip() + " " + line.strip()
                 else:
-                    dns_block = "dns:\n  enable: true\n  proxy-server-nameserver:\n"
-                    for dns_url in extracted_dns:
-                        dns_block += f"    - '{dns_url}'\n"
-                    clash_config = clash_config.replace("proxies:\n", f"{dns_block}proxies:\n")
+                    fixed_lines.append(line)
+            clash_config = '\n'.join(fixed_lines)
+            # =====================================================================
+
+            # 4. 完美缝合 DNS 配置：将抓取到的最新 DoH 强行插入 final 配置文件中
+            if extracted_dns:
+                dns_block = "  proxy-server-nameserver:\n"
+                for dns_url in extracted_dns:
+                    dns_block += f"    - '{dns_url}'\n"
+
+                if "dns:" in clash_config:
+                    clash_config = clash_config.replace("dns:\n", f"dns:\n{dns_block}")
+                else:
+                    dns_module = f"dns:\n  enable: true\n{dns_block}"
+                    clash_config = clash_config.replace("proxies:\n", f"{dns_module}proxies:\n")
                 print("[小跟班提示] 成功把最新的动态加密 DNS 缝合进出厂配置！")
 
-            # 6. 把这班经过完美加工的终极配置文件发送回路由器的 OpenClash
             self.send_response(200)
             self.send_header("Content-Type", "text/yaml; charset=utf-8")
             self.end_headers()
