@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import urllib.request
+import urllib.parse
+import http.server
+import socketserver
+import re
+
+# 核心设定：让原版的 subconverter 程序在容器内部改到 25501 端口偷偷运行
+REAL_BACKEND_PORT = 25501
+
+class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        # 1. 解析 OpenClash 发送给本容器的完整请求网址和参数
+        parsed_url = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+
+        # 2. 尝试从请求参数中抓取机场的原始订阅链接（即 url= 后面的内容）
+        target_urls = query_params.get('url', [])
+
+        extracted_dns = []
+        if target_urls:
+            airport_url = target_urls[0]
+            try:
+                # 3. 小跟班代替路由先访问一次机场，把里面最新变动、带最新 Token 的加密 DNS 抓出来
+                req = urllib.request.Request(airport_url, headers={'User-Agent': 'clash'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw_text = resp.read().decode('utf-8', errors='ignore')
+                    # 用正则表达式去匹配包含 dns-query 的动态加密 DoH 链接
+                    found_urls = re.findall(r"https://[^\s'\",\]]+/dns-query/[A-Za-z0-9-]+", raw_text)
+                    if found_urls:
+                        extracted_dns = list(set(found_urls)) # 去除重复的链接
+            except Exception as e:
+                print(f"[小跟班提示] 提前提取机场动态 DNS 失败: {e}")
+
+        # 4. 把 OpenClash 的请求原封不动地转交给内部真正的工作核心（本地 25501 端口）
+        backend_url = f"http://127.0.0.1:{REAL_BACKEND_PORT}{parsed_url.path}"
+        if parsed_url.query:
+            backend_url += f"?{parsed_url.query}"
+
+        try:
+            # 5. 拿到原版 subconverter 翻译好的标准 Clash 配置文件文本
+            with urllib.request.urlopen(backend_url, timeout=15) as resp:
+                clash_config = resp.read().decode('utf-8', errors='ignore')
+
+            # 6. 【核心缝合】如果成功抓到了最新的加密电话本，强行把它塞进配置中
+            if extracted_dns:
+                # 兼容处理：判断转换后的配置里原本是否有 dns: 块
+                if "dns:" in clash_config:
+                    proxy_ns_block = "  proxy-server-nameserver:\n"
+                    for dns_url in extracted_dns:
+                        proxy_ns_block += f"    - '{dns_url}'\n"
+                    # 如果原本有 dns:，直接在它的下一行插队插入最新的加密 DNS
+                    clash_config = clash_config.replace("dns:\n", f"dns:\n{proxy_ns_block}")
+                else:
+                    # 如果转换后的配置里没有 dns: 块，直接在 proxies: 正上方组装一个全新的 dns 块
+                    dns_block = "dns:\n  enable: true\n  proxy-server-nameserver:\n"
+                    for dns_url in extracted_dns:
+                        dns_block += f"    - '{dns_url}'\n"
+                    clash_config = clash_config.replace("proxies:\n", f"{dns_block}proxies:\n")
+                print("[小跟班提示] 成功把最新的动态加密 DNS 缝合进出厂配置！")
+
+            # 7. 把这班经过完美加工、带特种 DNS 的终极配置文件发送回路由器的 OpenClash
+            self.send_response(200)
+            self.send_header("Content-Type", "text/yaml; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(clash_config.encode('utf-8'))
+
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f"Subconverter Wrapper Error: {e}".encode('utf-8'))
+
+if __name__ == "__main__":
+    # 小跟班守在对外公开的 25500 端口上
+    with socketserver.TCPServer(("0.0.0.0", 25500), DynamicDNSHandler) as httpd:
+        print("[小跟班提示] 动态拦截服务已就绪，正在监听 25500 端口...")
+        httpd.serve_forever()
