@@ -1,11 +1,23 @@
 #!/bin/bash
 
-# 1. 让原版的 subconverter 二进制程序在后台秘密启动，并把端口改成 25501
-if [ -f "/base/subconverter" ]; then
-    /base/subconverter -l 127.0.0.1:25501 &
-else
-    subconverter -l 127.0.0.1:25501 &
+# 1. 启动前，用 sed 命令把 subconverter 的配置文件端口强行改成 25501
+# 这样它就不会跟我们对外的 25500 端口抢位置了
+if [ -f "/base/pref.toml" ]; then
+    sed -i 's/port = 25500/port = 25501/g' /base/pref.toml
+    sed -i 's/port=25500/port=25501/g' /base/pref.toml
 fi
 
-# 2. 启动我们刚刚写好的 Python 小跟班，占领对外公开的 25500 端口
+if [ -f "/base/pref.ini" ]; then
+    sed -i 's/port = 25500/port = 25501/g' /base/pref.ini
+    sed -i 's/port=25500/port=25501/g' /base/pref.ini
+fi
+
+# 2. 让原版 subconverter 在后台启动（它会乖乖去听 25501 端口）
+if [ -f "/base/subconverter" ]; then
+    /base/subconverter &
+else
+    subconverter &
+fi
+
+# 3. 启动 Python 小跟班，顺利占领对外的 25500 端口
 python3 /base/wrapper.py
