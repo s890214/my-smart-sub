@@ -26,7 +26,14 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
             airport_url = target_urls[0]
             try:
                 # 3. 小跟班代替路由先访问一次机场，把里面最新变动的加密 DNS 抓出来
-                req = urllib.request.Request(airport_url, headers={'User-Agent': 'clash'})
+                # 【核心伪装】直接在构造函数中锁定 headers，阻断 Python 悄悄塞入自动化 bot 标识
+                req = urllib.request.Request(
+                    airport_url,
+                    headers={
+                        'User-Agent': 'Mihomo',
+                        'User-agent': 'Mihomo' # 双重大小写锁定，彻底洗掉 Python 默认标识
+                    }
+                )
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     raw_text = resp.read().decode('utf-8', errors='ignore')
                     found_urls = re.findall(r"https://[^\s'\",\]]+/dns-query/[A-Za-z0-9-]+", raw_text)
@@ -35,16 +42,21 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 print(f"[小跟班提示] 提前提取机场动态 DNS 失败: {e}")
 
-        # 4. 把 OpenClash 的请求转交给内部真正的工作核心（本地 25500 端口）
+        # 4. 构造请求准备转发给内部真正的 subconverter 工作核心（本地 25500 端口）
         backend_url = f"http://127.0.0.1:{REAL_BACKEND_PORT}{parsed_url.path}"
         if parsed_url.query:
             backend_url += f"?{parsed_url.query}"
 
         try:
-            # 【核心修复】创建请求对象，强行伪装 User-Agent 为 clash
-            # 这样内核内部发起的 curl 就会带上标准的 clash 头，彻底绕过机场的 Python 爬虫拦截墙
-            backend_req = urllib.request.Request(backend_url)
-            backend_req.add_header('User-Agent', 'clash')
+            # 【核心伪装】转发给本地核心时同样直接在字典里锁死 Mihomo 身份
+            # 这样 subconverter 内部发起 C++ curl 请求时会 100% 携带清纯的 Mihomo 标识，绕过机场拦截墙
+            backend_req = urllib.request.Request(
+                backend_url,
+                headers={
+                    'User-Agent': 'Mihomo',
+                    'User-agent': 'Mihomo'
+                }
+            )
 
             # 拿到原版 subconverter 翻译好的标准 Clash 配置文件文本
             with urllib.request.urlopen(backend_req, timeout=15) as resp:
