@@ -1,23 +1,14 @@
 #!/bin/bash
 
-# 1. 启动前，用 sed 命令把 subconverter 的配置文件端口强行改成 25501
-# 这样它就不会跟我们对外的 25500 端口抢位置了
-if [ -f "/base/pref.toml" ]; then
-    sed -i 's/port = 25500/port = 25501/g' /base/pref.toml
-    sed -i 's/port=25500/port=25501/g' /base/pref.toml
-fi
+# 切换到程序可能存在的工作目录，确保原版能顺畅读取组件
+cd /base 2>/dev/null || cd /app 2>/dev/null
 
-if [ -f "/base/pref.ini" ]; then
-    sed -i 's/port = 25500/port = 25501/g' /base/pref.ini
-    sed -i 's/port=25500/port=25501/g' /base/pref.ini
-fi
-
-# 2. 让原版 subconverter 在后台启动（它会乖乖去听 25501 端口）
-if [ -f "/base/subconverter" ]; then
-    /base/subconverter &
+# 1. 让原版 subconverter 在后台默认启动（它会使用它雷打不动的默认 25500 端口）
+if [ -f "./subconverter" ]; then
+    ./subconverter &
 else
     subconverter &
 fi
 
-# 3. 启动 Python 小跟班，顺利占领对外的 25500 端口
+# 2. 启动 Python 小跟班（去听 25501 端口，不再跟原版抢位置）
 python3 /base/wrapper.py
