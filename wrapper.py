@@ -66,32 +66,34 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
             with urllib.request.urlopen(backend_req, timeout=15) as resp:
                 clash_config = resp.read().decode('utf-8', errors='ignore')
 
-            # =====================================================================
-            # 【新增高阶核心功能】自动无损缝合被 Subconverter 意外截断换行的长行代理节点
-            # =====================================================================
+            # 自动无损缝合被 Subconverter 意外截断换行的长行代理节点（针对 Reality 节点的多行保护）
             raw_lines = clash_config.split('\n')
             fixed_lines = []
             for line in raw_lines:
-                # 如果上一行是以逗号或左大括号结尾，且当前行不是独立节点（不以 - 开头），说明是被迫强行截断的“风筝线”，直接首尾拼接
                 if fixed_lines and line.strip() and not line.strip().startswith('-') and not line.strip().startswith('proxy-groups:') and not line.strip().startswith('rules:') and (fixed_lines[-1].strip().endswith(',') or fixed_lines[-1].strip().endswith('{')):
                     fixed_lines[-1] = fixed_lines[-1].rstrip() + " " + line.strip()
                 else:
                     fixed_lines.append(line)
             clash_config = '\n'.join(fixed_lines)
-            # =====================================================================
 
-            # 4. 完美缝合 DNS 配置：将抓取到的最新 DoH 强行插入 final 配置文件中
+            # =====================================================================
+            # 【高阶精准缝合】利用行首锚点，确保只替换最顶层的主 Key，绝不污染策略组内部
+            # =====================================================================
             if extracted_dns:
                 dns_block = "  proxy-server-nameserver:\n"
                 for dns_url in extracted_dns:
                     dns_block += f"    - '{dns_url}'\n"
 
-                if "dns:" in clash_config:
-                    clash_config = clash_config.replace("dns:\n", f"dns:\n{dns_block}")
-                else:
+                # 使用 re.M (多行模式) 和 ^ 锚点，确保只匹配最左边、无缩进的顶级配置项
+                if re.search(r"^dns:\s*$", clash_config, re.M):
+                    # 如果原配置已经有最顶层的 dns: 块，直接在下方插入最新的加密 DoH 列表
+                    clash_config = re.sub(r"^(dns:\s*)$", f"\\1\n{dns_block.rstrip()}", clash_config, flags=re.M)
+                elif re.search(r"^proxies:\s*$", clash_config, re.M):
+                    # 如果原配置没有 dns: 块，在顶级 proxies: 的正上方创建最纯净的 dns 主模块
                     dns_module = f"dns:\n  enable: true\n{dns_block}"
-                    clash_config = clash_config.replace("proxies:\n", f"{dns_module}proxies:\n")
-                print("[小跟班提示] 成功把最新的动态加密 DNS 缝合进出厂配置！")
+                    clash_config = re.sub(r"^(proxies:\s*)$", f"{dns_module}\\1", clash_config, flags=re.M)
+                print("[小跟班提示] 动态加密 DNS 已精准缝合至顶级主配置中！")
+            # =====================================================================
 
             self.send_response(200)
             self.send_header("Content-Type", "text/yaml; charset=utf-8")
