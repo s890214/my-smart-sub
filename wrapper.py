@@ -1,31 +1,120 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Smart Sub Converter Wrapper V2
+name 用 subconverter 的，其他字段用原始的
+保留分组，去除 emoji
+"""
 
 import urllib.request
 import urllib.parse
 import http.server
 import socketserver
 import re
+import yaml
+import io
 
 # 小跟班在容器内部用 25501 端口监听
 PROXY_PORT = 25501
 # 原版 subconverter 在容器内部默认的 25500 端口
 REAL_BACKEND_PORT = 25500
 
-class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
+
+def remove_emoji(text):
+    """去除文本中的 emoji，保留其他字符"""
+    if not text or not isinstance(text, str):
+        return text
+
+    # 匹配 emoji 的正则表达式（包含国旗、符号等）
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001F926-\U0001F937"
+        "\U0001F918-\U0001F940"
+        "\U00010000-\U0010FFFF"  # 补充平面
+        "]+",
+        flags=re.UNICODE
+    )
+
+    result = emoji_pattern.sub('', text)
+    # 清理多余空格
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
+
+
+def extract_proxies_from_yaml(content):
+    """从 YAML 内容中提取 proxies 列表，保留完整字段"""
+    try:
+        data = yaml.safe_load(content)
+        if data and 'proxies' in data:
+            return data['proxies']
+    except Exception as e:
+        print(f"[解析警告] 无法解析为 YAML: {e}")
+    return None
+
+
+def extract_dns_from_config(content):
+    """从配置中提取动态 DNS 链接"""
+    found_urls = re.findall(r"https://[^\s'\",\]]+/dns-query/[A-Za-z0-9-]+", content)
+    return list(set(found_urls)) if found_urls else []
+
+
+def match_proxy_by_server_port(original_proxies, server, port):
+    """
+    根据 server 和 port 匹配原始节点
+    返回匹配的原始节点，如果没有则返回 None
+    """
+    for orig in original_proxies:
+        if orig.get('server') == server and orig.get('port') == port:
+            return orig
+    return None
+
+
+def merge_proxy_keep_name(conv_proxy, orig_proxy):
+    """
+    合并节点：保留 subconverter 的 name，其他字段用原始的
+    """
+    if not orig_proxy:
+        # 如果找不到原始节点，返回转换后的（去除 emoji）
+        result = dict(conv_proxy)
+        result['name'] = remove_emoji(result.get('name', ''))
+        return result
+
+    # 创建新节点：以原始节点为基础
+    merged = dict(orig_proxy)
+
+    # 保留 subconverter 的 name（去除 emoji）
+    merged['name'] = remove_emoji(conv_proxy.get('name', ''))
+
+    # 保留 subconverter 可能添加的分组相关字段（如果原始没有）
+    group_related_fields = ['udp', 'tfo', 'skip-cert-verify']
+    for field in group_related_fields:
+        if field in conv_proxy and field not in merged:
+            merged[field] = conv_proxy[field]
+
+    return merged
+
+
+class SmartSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        # 1. 解析 OpenClash 发送给本容器的完整请求网址和参数
+        # 1. 解析请求参数
         parsed_url = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed_url.query)
-
-        # 2. 尝试从请求参数中抓取机场的原始订阅链接
         target_urls = query_params.get('url', [])
 
+        original_proxies = []  # 原始订阅中的节点列表
         extracted_dns = []
+        raw_original = None
+
         if target_urls:
             airport_url = target_urls[0]
 
-            # 自动安全拼接 &flag=clash 确保机场向小跟班返回包含加密 DNS 的完整配置
+            # 添加 flag=clash 获取完整配置
             if "flag=" not in airport_url:
                 if "?" in airport_url:
                     airport_url += "&flag=clash"
@@ -41,15 +130,21 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
                     }
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
-                    raw_text = resp.read().decode('utf-8', errors='ignore')
-                    # 精准匹配包含端口号的动态加密 DoH 链接
-                    found_urls = re.findall(r"https://[^\s'\",\]]+/dns-query/[A-Za-z0-9-]+", raw_text)
-                    if found_urls:
-                        extracted_dns = list(set(found_urls))
-            except Exception as e:
-                print(f"[小跟班提示] 提前提取机场动态 DNS 失败: {e}")
+                    raw_original = resp.read().decode('utf-8', errors='ignore')
 
-        # 3. 构造完整请求，无损转发给内部真正的 subconverter 工作核心（本地 25500 端口）
+                    # 提取 DNS
+                    extracted_dns = extract_dns_from_config(raw_original)
+
+                    # 解析原始订阅中的 proxies
+                    proxies = extract_proxies_from_yaml(raw_original)
+                    if proxies:
+                        original_proxies = proxies
+                        print(f"[小跟班提示] 从原始订阅提取了 {len(original_proxies)} 个节点")
+
+            except Exception as e:
+                print(f"[小跟班提示] 获取原始订阅失败: {e}")
+
+        # 2. 请求 subconverter 后端获取转换后的配置（含分组）
         backend_url = f"http://127.0.0.1:{REAL_BACKEND_PORT}{parsed_url.path}"
         if parsed_url.query:
             backend_url += f"?{parsed_url.query}"
@@ -64,48 +159,78 @@ class DynamicDNSHandler(http.server.SimpleHTTPRequestHandler):
             )
 
             with urllib.request.urlopen(backend_req, timeout=15) as resp:
-                clash_config = resp.read().decode('utf-8', errors='ignore')
+                converted_config = resp.read().decode('utf-8', errors='ignore')
 
-            # 自动无损缝合被 Subconverter 意外截断换行的长行代理节点（针对 Reality 节点的多行保护）
-            raw_lines = clash_config.split('\n')
-            fixed_lines = []
-            for line in raw_lines:
-                if fixed_lines and line.strip() and not line.strip().startswith('-') and not line.strip().startswith('proxy-groups:') and not line.strip().startswith('rules:') and (fixed_lines[-1].strip().endswith(',') or fixed_lines[-1].strip().endswith('{')):
-                    fixed_lines[-1] = fixed_lines[-1].rstrip() + " " + line.strip()
-                else:
-                    fixed_lines.append(line)
-            clash_config = '\n'.join(fixed_lines)
+            # 3. 解析转换后的配置
+            try:
+                converted_data = yaml.safe_load(converted_config)
+            except Exception as e:
+                print(f"[小跟班提示] 无法解析转换后的配置: {e}")
+                converted_data = None
 
-            # =====================================================================
-            # 【高阶精准缝合】利用行首锚点，确保只替换最顶层的主 Key，绝不污染策略组内部
-            # =====================================================================
-            if extracted_dns:
-                dns_block = "  proxy-server-nameserver:\n"
-                for dns_url in extracted_dns:
-                    dns_block += f"    - '{dns_url}'\n"
+            if converted_data and original_proxies:
+                # 4. 合并节点：name 用 subconverter 的，其他字段用原始的
+                merged_proxies = []
+                matched_count = 0
+                unmatched_count = 0
 
-                # 使用 re.M (多行模式) 和 ^ 锚点，确保只匹配最左边、无缩进的顶级配置项
-                if re.search(r"^dns:\s*$", clash_config, re.M):
-                    # 如果原配置已经有最顶层的 dns: 块，直接在下方插入最新的加密 DoH 列表
-                    clash_config = re.sub(r"^(dns:\s*)$", f"\\1\n{dns_block.rstrip()}", clash_config, flags=re.M)
-                elif re.search(r"^proxies:\s*$", clash_config, re.M):
-                    # 如果原配置没有 dns: 块，在顶级 proxies: 的正上方创建最纯净的 dns 主模块
-                    dns_module = f"dns:\n  enable: true\n{dns_block}"
-                    clash_config = re.sub(r"^(proxies:\s*)$", f"{dns_module}\\1", clash_config, flags=re.M)
-                print("[小跟班提示] 动态加密 DNS 已精准缝合至顶级主配置中！")
-            # =====================================================================
+                for conv_proxy in converted_data.get('proxies', []):
+                    server = conv_proxy.get('server', '')
+                    port = conv_proxy.get('port', 0)
+
+                    # 根据 server:port 匹配原始节点
+                    orig_proxy = match_proxy_by_server_port(original_proxies, server, port)
+
+                    if orig_proxy:
+                        # 找到匹配的原始节点，合并
+                        merged = merge_proxy_keep_name(conv_proxy, orig_proxy)
+                        matched_count += 1
+                    else:
+                        # 找不到原始节点，使用转换后的（去除 emoji）
+                        merged = dict(conv_proxy)
+                        merged['name'] = remove_emoji(merged.get('name', ''))
+                        unmatched_count += 1
+
+                    merged_proxies.append(merged)
+
+                # 更新 converted_data 中的 proxies
+                converted_data['proxies'] = merged_proxies
+
+                print(f"[小跟班提示] 节点合并完成: {matched_count} 个匹配, {unmatched_count} 个未匹配")
+
+            # 5. 添加 DNS 配置
+            if extracted_dns and converted_data:
+                if 'dns' not in converted_data:
+                    converted_data['dns'] = {}
+                converted_data['dns']['enable'] = True
+                converted_data['dns']['proxy-server-nameserver'] = extracted_dns
+                print(f"[小跟班提示] 已添加 {len(extracted_dns)} 个动态 DNS")
+
+            # 6. 序列化回 YAML
+            output = io.StringIO()
+            yaml.dump(
+                converted_data,
+                output,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+                width=float('inf')  # 防止自动换行
+            )
+            final_config = output.getvalue()
 
             self.send_response(200)
             self.send_header("Content-Type", "text/yaml; charset=utf-8")
             self.end_headers()
-            self.wfile.write(clash_config.encode('utf-8'))
+            self.wfile.write(final_config.encode('utf-8'))
 
         except Exception as e:
+            print(f"[小跟班提示] 后端请求失败: {e}")
             self.send_response(500)
             self.end_headers()
             self.wfile.write(f"Subconverter Wrapper Error: {e}".encode('utf-8'))
 
+
 if __name__ == "__main__":
-    with socketserver.TCPServer(("0.0.0.0", PROXY_PORT), DynamicDNSHandler) as httpd:
-        print(f"[小跟班提示] 动态拦截服务已就绪，正在监听 {PROXY_PORT} 端口...")
+    with socketserver.TCPServer(("0.0.0.0", PROXY_PORT), SmartSubHandler) as httpd:
+        print(f"[小跟班提示] 智能合并服务已就绪，正在监听 {PROXY_PORT} 端口...")
         httpd.serve_forever()
