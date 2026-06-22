@@ -4,6 +4,7 @@
 cd /base 2>/dev/null || cd /app 2>/dev/null
 
 # 1. 启动原版 subconverter（后台，25500 端口）
+echo "[小跟班提示] 启动 subconverter..."
 if [ -f "./subconverter" ]; then
     ./subconverter &
 else
@@ -11,7 +12,7 @@ else
 fi
 
 # 等待 subconverter 启动完成（最多等 10 秒）
-echo "[小跟班提示] 等待 subconverter 启动..."
+echo "[小跟班提示] 等待 subconverter 就绪..."
 for i in {1..20}; do
     if curl -s http://127.0.0.1:25500 >/dev/null 2>&1; then
         echo "[小跟班提示] subconverter 已就绪"
