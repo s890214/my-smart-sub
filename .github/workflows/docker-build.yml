@@ -76,6 +76,17 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Generated version: $VERSION"
+          
+          # 生成 VERSION 文件
+          echo "$VERSION" > VERSION
+          
+      - name: Update VERSION file in repo
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add VERSION
+          git diff --staged --quiet || git commit -m "chore: update version to $VERSION"
+          git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
 
       - name: Build and push Docker image
         if: steps.check-base.outputs.needs_build == 'true' || github.event_name == 'push'
@@ -86,6 +97,8 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/my-smart-sub:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/my-smart-sub:v${{ steps.version.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
