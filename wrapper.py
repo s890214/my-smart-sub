@@ -231,6 +231,8 @@ class SmartSubHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import sys
+    
     # 读取版本号
     version = "未知"
     try:
@@ -241,4 +243,5 @@ if __name__ == "__main__":
     
     with socketserver.TCPServer(("0.0.0.0", PROXY_PORT), SmartSubHandler) as httpd:
         print(f"[小跟班提示] 智能合并服务 v{version} 已就绪，正在监听 {PROXY_PORT} 端口...")
+        sys.stdout.flush()
         httpd.serve_forever()
