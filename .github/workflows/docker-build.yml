@@ -2,39 +2,93 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ "main", "master" ] # 兼容 main 或 master 主分支
+    branches: [ "main", "master" ]
+  schedule:
+    - cron: '0 2 * * *'  # 每天凌晨 2 点检查基础镜像更新
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
-  build:
+  check-and-build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # 赋予写入 GitHub Packages 镜像库的权限
+      packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # 临时自动授权
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Downcase repository name
         run: |
           echo "REPO_NAME=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
+      - name: Check base image update
+        id: check-base
+        run: |
+          # 获取当前构建的基础镜像 digest
+          BASE_IMAGE="asdlokj1qpi23/subconverter:latest"
+          
+          # 拉取最新基础镜像
+          docker pull $BASE_IMAGE
+          
+          # 获取最新 digest
+          NEW_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $BASE_IMAGE)
+          echo "Latest base image digest: $NEW_DIGEST"
+          
+          # 尝试获取上次构建时记录的基础镜像 digest
+          LAST_DIGEST_FILE=".last-base-digest"
+          if [ -f "$LAST_DIGEST_FILE" ]; then
+            LAST_DIGEST=$(cat "$LAST_DIGEST_FILE")
+            echo "Last base image digest: $LAST_DIGEST"
+            
+            if [ "$NEW_DIGEST" = "$LAST_DIGEST" ]; then
+              echo "Base image not changed, skipping build"
+              echo "needs_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "Base image updated, need to rebuild"
+              echo "needs_build=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No previous digest found, will build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # 保存 digest 到文件
+          echo "$NEW_DIGEST" > "$LAST_DIGEST_FILE"
+
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        if: steps.check-base.outputs.needs_build == 'true' || github.event_name == 'push'
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ghcr.io/${{ env.REPO_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save base image digest
+        if: steps.check-base.outputs.needs_build == 'true' || github.event_name == 'push'
+        run: |
+          BASE_IMAGE="asdlokj1qpi23/subconverter:latest"
+          NEW_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $BASE_IMAGE)
+          echo "$NEW_DIGEST" > .last-base-digest
+          
+          # 提交 digest 文件到仓库（用于持久化记录）
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .last-base-digest
+          git diff --staged --quiet || git commit -m "Update base image digest: $NEW_DIGEST"
+          git push
