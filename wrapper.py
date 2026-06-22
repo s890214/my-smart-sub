@@ -77,20 +77,17 @@ def match_proxy_by_server_port(original_proxies, server, port):
 
 def merge_proxy_keep_name(conv_proxy, orig_proxy):
     """
-    合并节点：保留原始节点的所有字段（包括 alpn, idle-session 等）
-    只替换 name 为 subconverter 的（去除 emoji）
+    合并节点：name 用 subconverter 的，其他字段用原始节点的
     """
     if not orig_proxy:
-        # 如果找不到原始节点，返回转换后的（去除 emoji）
-        result = dict(conv_proxy)
-        result['name'] = remove_emoji(result.get('name', ''))
-        return result
+        # 如果找不到原始节点，返回转换后的
+        return dict(conv_proxy)
 
     # 创建新节点：以原始节点为基础（保留原始节点的所有字段）
     merged = dict(orig_proxy)
 
-    # 保留 subconverter 的 name（去除 emoji）
-    merged['name'] = remove_emoji(conv_proxy.get('name', ''))
+    # 只替换 name 为 subconverter 的
+    merged['name'] = conv_proxy.get('name', '')
 
     return merged
 
