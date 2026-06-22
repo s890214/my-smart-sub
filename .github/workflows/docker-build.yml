@@ -68,13 +68,24 @@ jobs:
           # 保存 digest 到文件
           echo "$NEW_DIGEST" > "$LAST_DIGEST_FILE"
 
+      - name: Generate version tag
+        id: version
+        run: |
+          # 生成版本号：年月日.时分秒
+          VERSION=$(date +'%Y%m%d.%H%M%S')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION"
+
       - name: Build and push Docker image
         if: steps.check-base.outputs.needs_build == 'true' || github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/my-smart-sub:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/my-smart-sub:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/my-smart-sub:v${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
