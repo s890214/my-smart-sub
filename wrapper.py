@@ -231,6 +231,14 @@ class SmartSubHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # 读取版本号
+    version = "未知"
+    try:
+        with open('/base/VERSION', 'r') as f:
+            version = f.read().strip()
+    except:
+        pass
+    
     with socketserver.TCPServer(("0.0.0.0", PROXY_PORT), SmartSubHandler) as httpd:
-        print(f"[小跟班提示] 智能合并服务已就绪，正在监听 {PROXY_PORT} 端口...")
+        print(f"[小跟班提示] 智能合并服务 v{version} 已就绪，正在监听 {PROXY_PORT} 端口...")
         httpd.serve_forever()

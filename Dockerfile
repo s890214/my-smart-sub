@@ -7,6 +7,7 @@ RUN apk add --no-cache python3 py3-yaml bash
 # 3. 复制脚本到容器
 COPY wrapper.py /base/wrapper.py
 COPY entrypoint.sh /base/entrypoint.sh
+COPY VERSION /base/VERSION
 
 # 4. 赋予可执行权限
 RUN chmod +x /base/entrypoint.sh
