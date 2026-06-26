@@ -3,8 +3,6 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [ "main", "master" ]
-  schedule:
-    - cron: '0 2 * * *'  # 每天凌晨 2 点检查基础镜像更新
   workflow_dispatch:  # 允许手动触发
 
 jobs:
