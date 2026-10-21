@@ -1,5 +1,11 @@
 # 1. 基础镜像直接使用优化版镜像
+# 上游：tindy2013/subconverter (GPL-3.0) -> asdlokj1qpi23/subconverter
+# 本镜像为 GPL-3.0 衍生作品，源码见 https://github.com/s890214/my-smart-sub
 FROM asdlokj1qpi23/subconverter:latest
+
+LABEL org.opencontainers.image.source="https://github.com/s890214/my-smart-sub" \
+      org.opencontainers.image.licenses="GPL-3.0" \
+      org.opencontainers.image.base.name="asdlokj1qpi23/subconverter"
 
 # 2. 接收构建参数
 ARG VERSION=unknown
